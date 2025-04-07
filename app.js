@@ -6,91 +6,108 @@ const { createProxyMiddleware } = require('http-proxy-middleware');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Función para parsear un archivo M3U
+// Función para parsear el archivo M3U
 function parseM3U(content) {
   const lines = content.split('\n');
   const channels = [];
   let current = null;
-
+  const regexLogo = /tvg-logo="([^"]+)"/;
+  const regexGroup = /group-title="([^"]+)"/;
+  
   lines.forEach(line => {
     line = line.trim();
     if (line.startsWith('#EXTINF')) {
-      const name = line.split(',')[1] || 'Sin nombre';
-      current = { name };
+      let name = line.substring(line.indexOf(',') + 1).trim();
+      let logoMatch = line.match(regexLogo);
+      let groupMatch = line.match(regexGroup);
+      let tvgLogo = logoMatch ? logoMatch[1] : '';
+      let groupTitle = groupMatch ? groupMatch[1] : '';
+      current = { name, tvgLogo, groupTitle };
     } else if (line && !line.startsWith('#') && current) {
       current.url = line;
       channels.push(current);
       current = null;
     }
   });
-
+  
   return channels;
 }
 
-// Proxy para evitar el mixed content
-app.use('/proxy-stream', createProxyMiddleware({
-  target: '',
-  changeOrigin: true,
-  router: req => {
-    const url = decodeURIComponent(req.url.replace('/live/', 'http://'));
-    return url.split('/live/')[0];
-  },
-  pathRewrite: (path, req) => {
-    const realUrl = decodeURIComponent(path.replace(/^\/live\//, ''));
-    const parts = realUrl.split('/');
-    parts.shift();
-    return '/' + parts.join('/');
-  },
-  onProxyReq: (proxyReq, req) => {
-    proxyReq.setHeader('origin', '');
+// Endpoint proxy para evitar contenido mixto y controlar el tiempo de espera
+app.use('/proxy', (req, res, next) => {
+  const target = req.query.url;
+  if (!target) {
+    res.status(400).send('No se especificó la URL');
+    return;
   }
-}));
+  // Limpiamos el path para no interferir con la URL destino
+  req.url = '';
+  
+  createProxyMiddleware({
+    target: target,
+    changeOrigin: true,
+    secure: false, // útil si el destino usa certificados no válidos
+    timeout: 15000, // 15 segundos para responder
+    proxyTimeout: 15000, // 15 segundos para la respuesta del proxy
+    onError(err, req, res) {
+      console.error('Error en proxy:', err);
+      res.status(504).send('Error occurred while trying to proxy: ' + target);
+    }
+  })(req, res, next);
+});
 
-// Página principal
+// Ruta principal: lee el archivo M3U, parsea y genera la interfaz HTML con la lista de canales
 app.get('/', (req, res) => {
   const filePath = path.join(__dirname, 'playlist.m3u');
   fs.readFile(filePath, 'utf8', (err, data) => {
     if (err) return res.send('Error al cargar el archivo M3U');
 
     const channels = parseM3U(data);
-
-    const channelList = channels.map((ch, i) => {
+    const channelList = channels.map(ch => {
       const encodedUrl = encodeURIComponent(ch.url);
-      return `<li><a href="#" onclick="playChannel('${encodedUrl}')">${ch.name}</a></li>`;
+      const logoHtml = ch.tvgLogo ? `<img src="${ch.tvgLogo}" alt="${ch.name}" style="width:50px;height:auto;"> ` : '';
+      return `<li>${logoHtml}<a href="#" onclick="playChannel('${encodedUrl}')">${ch.name}</a> (${ch.groupTitle})</li>`;
     }).join('');
 
     res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>Lista IPTV</title>
-    </head>
-    <body>
-      <h1>Canales</h1>
-      <ul>${channelList}</ul>
-      <hr/>
-      <video id="videoPlayer" width="640" height="360" controls autoplay></video>
-      <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-      <script>
-        function playChannel(encodedUrl) {
-          const url = '/proxy-stream/live/' + encodedUrl;
-          const video = document.getElementById('videoPlayer');
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <title>Lista IPTV</title>
+      </head>
+      <body>
+        <h1>Canales IPTV</h1>
+        <ul>${channelList}</ul>
+        <hr/>
+        <video id="videoPlayer" width="640" height="360" controls autoplay>
+          Tu navegador no soporta la reproducción de video.
+        </video>
+        <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+        <script>
+          function playChannel(encodedUrl) {
+            const url = '/proxy?url=' + encodedUrl;
+            const video = document.getElementById('videoPlayer');
 
-          if (Hls.isSupported()) {
-            const hls = new Hls();
-            hls.loadSource(url);
-            hls.attachMedia(video);
-            hls.on(Hls.Events.MANIFEST_PARSED, () => video.play());
-          } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-            video.src = url;
-            video.addEventListener('loadedmetadata', () => video.play());
-          } else {
-            alert("Tu navegador no soporta este tipo de stream");
+            if (Hls.isSupported()) {
+              const hls = new Hls();
+              hls.loadSource(url);
+              hls.attachMedia(video);
+              hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                video.play();
+              });
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+              video.src = url;
+              video.addEventListener('loadedmetadata', function() {
+                video.play();
+              });
+            } else {
+              alert("Tu navegador no soporta HLS.");
+            }
           }
-        }
-      </script>
-    </body>
-    </html>
+        </script>
+      </body>
+      </html>
     `);
   });
 });
@@ -98,6 +115,7 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Servidor corriendo en http://localhost:${PORT}`);
 });
+
 
 // const express = require('express');
 // const fs = require('fs');
