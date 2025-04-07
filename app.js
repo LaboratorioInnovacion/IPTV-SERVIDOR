@@ -34,27 +34,35 @@ function parseM3U(content) {
 }
 
 // Endpoint proxy para evitar contenido mixto y controlar el tiempo de espera
+// Endpoint proxy para evitar contenido mixto y controlar el tiempo de espera
 app.use('/proxy', (req, res, next) => {
   const target = req.query.url;
   if (!target) {
     res.status(400).send('No se especificó la URL');
     return;
   }
-  // Limpiamos el path para no interferir con la URL destino
-  req.url = '';
-  
-  createProxyMiddleware({
-    target: target,
-    changeOrigin: true,
-    secure: false, // útil si el destino usa certificados no válidos
-    timeout: 15000, // 15 segundos para responder
-    proxyTimeout: 15000, // 15 segundos para la respuesta del proxy
-    onError(err, req, res) {
-      console.error('Error en proxy:', err);
-      res.status(504).send('Error occurred while trying to proxy: ' + target);
-    }
-  })(req, res, next);
+  try {
+    // Parseamos la URL completa usando la clase URL de Node.js
+    const parsedUrl = new URL(target);
+    // Actualizamos el req.url para que contenga la ruta y los parámetros de búsqueda
+    req.url = parsedUrl.pathname + parsedUrl.search;
+    // Configuramos el proxy con el origen (dominio y protocolo)
+    createProxyMiddleware({
+      target: parsedUrl.origin,
+      changeOrigin: true,
+      secure: false, // útil si el destino usa certificados no válidos
+      timeout: 15000, // 15 segundos para responder
+      proxyTimeout: 15000, // 15 segundos para la respuesta del proxy
+      onError(err, req, res) {
+        console.error('Error en proxy:', err);
+        res.status(504).send('Error occurred while trying to proxy: ' + target);
+      }
+    })(req, res, next);
+  } catch (e) {
+    res.status(400).send('URL inválida');
+  }
 });
+
 
 // Ruta principal: lee el archivo M3U, parsea y genera la interfaz HTML con la lista de canales
 app.get('/', (req, res) => {
