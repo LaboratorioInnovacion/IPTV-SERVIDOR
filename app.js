@@ -1,63 +1,102 @@
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const { createProxyMiddleware } = require('http-proxy-middleware');
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Configuración del proxy inverso para el stream
-// Se encarga de redirigir las peticiones del cliente (HTTPS) al servidor de stream (HTTP)
+// Función para parsear un archivo M3U
+function parseM3U(content) {
+  const lines = content.split('\n');
+  const channels = [];
+  let current = null;
+
+  lines.forEach(line => {
+    line = line.trim();
+    if (line.startsWith('#EXTINF')) {
+      const name = line.split(',')[1] || 'Sin nombre';
+      current = { name };
+    } else if (line && !line.startsWith('#') && current) {
+      current.url = line;
+      channels.push(current);
+      current = null;
+    }
+  });
+
+  return channels;
+}
+
+// Proxy para evitar el mixed content
 app.use('/proxy-stream', createProxyMiddleware({
-  target: 'http://200.115.193.177',
+  target: '',
   changeOrigin: true,
-  pathRewrite: {
-    '^/proxy-stream': '' // elimina /proxy-stream al reenviar la petición
+  router: req => {
+    const url = decodeURIComponent(req.url.replace('/live/', 'http://'));
+    return url.split('/live/')[0];
+  },
+  pathRewrite: (path, req) => {
+    const realUrl = decodeURIComponent(path.replace(/^\/live\//, ''));
+    const parts = realUrl.split('/');
+    parts.shift();
+    return '/' + parts.join('/');
+  },
+  onProxyReq: (proxyReq, req) => {
+    proxyReq.setHeader('origin', '');
   }
 }));
 
-// Ruta principal que entrega la interfaz HTML para reproducir el stream
+// Página principal
 app.get('/', (req, res) => {
-  res.send(`
-  <!DOCTYPE html>
-  <html>
+  const filePath = path.join(__dirname, 'playlist.m3u');
+  fs.readFile(filePath, 'utf8', (err, data) => {
+    if (err) return res.send('Error al cargar el archivo M3U');
+
+    const channels = parseM3U(data);
+
+    const channelList = channels.map((ch, i) => {
+      const encodedUrl = encodeURIComponent(ch.url);
+      return `<li><a href="#" onclick="playChannel('${encodedUrl}')">${ch.name}</a></li>`;
+    }).join('');
+
+    res.send(`
+    <!DOCTYPE html>
+    <html>
     <head>
-      <meta charset="UTF-8">
-      <title>Reproductor IPTV con Proxy</title>
+      <title>Lista IPTV</title>
     </head>
     <body>
-      <h1>Reproductor IPTV</h1>
-      <video id="videoPlayer" width="640" height="360" controls autoplay>
-        Tu navegador no soporta la reproducción de video.
-      </video>
+      <h1>Canales</h1>
+      <ul>${channelList}</ul>
+      <hr/>
+      <video id="videoPlayer" width="640" height="360" controls autoplay></video>
       <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
       <script>
-        const video = document.getElementById('videoPlayer');
-        // URL del stream a través del proxy para evitar contenido mixto
-        const videoSrc = '/proxy-stream/live/26hd-720/.m3u8';
-  
-        if (Hls.isSupported()) {
-          const hls = new Hls();
-          hls.loadSource(videoSrc);
-          hls.attachMedia(video);
-          hls.on(Hls.Events.MANIFEST_PARSED, function() {
-            video.play();
-          });
-        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-          // Para navegadores como Safari que soportan HLS de forma nativa
-          video.src = videoSrc;
-          video.addEventListener('loadedmetadata', function() {
-            video.play();
-          });
-        } else {
-          console.error("Tu navegador no soporta HLS.");
+        function playChannel(encodedUrl) {
+          const url = '/proxy-stream/live/' + encodedUrl;
+          const video = document.getElementById('videoPlayer');
+
+          if (Hls.isSupported()) {
+            const hls = new Hls();
+            hls.loadSource(url);
+            hls.attachMedia(video);
+            hls.on(Hls.Events.MANIFEST_PARSED, () => video.play());
+          } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            video.src = url;
+            video.addEventListener('loadedmetadata', () => video.play());
+          } else {
+            alert("Tu navegador no soporta este tipo de stream");
+          }
         }
       </script>
     </body>
-  </html>
-  `);
+    </html>
+    `);
+  });
 });
 
-// Iniciar el servidor
 app.listen(PORT, () => {
-  console.log(`Servidor corriendo en el puerto ${PORT}`);
+  console.log(`Servidor corriendo en http://localhost:${PORT}`);
 });
 
 // const express = require('express');
