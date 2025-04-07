@@ -66,7 +66,7 @@ app.use('/proxy', (req, res, next) => {
 
 // Ruta principal: lee el archivo M3U, parsea y genera la interfaz HTML con la lista de canales
 app.get('/', (req, res) => {
-  const filePath = path.join(__dirname, 'playlist.m3u');
+  const filePath = path.join(__dirname, 'latino2.m3u');
   fs.readFile(filePath, 'utf8', (err, data) => {
     if (err) return res.send('Error al cargar el archivo M3U');
 
